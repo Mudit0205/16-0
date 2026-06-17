@@ -6,7 +6,11 @@ function App(){
   const [rerolls,setRerolls]=useState(2);           // two free re-rolls per game to dodge a squad
   const [result,setResult]=useState(null);
   const [hard,setHard]=useState(false);
+  const [blindDraft,setBlindDraft]=useState(true);  // true only if the WHOLE draft was done with ratings hidden
   const [anim,setAnim]=useState(false);
+  const [reel,setReel]=useState(null);              // squad currently flashing during the slot spin
+  const spinTimer=useRef(null);
+  const lastTeamRef=useRef(null);                   // last landed franchise, to avoid back-to-back repeats
   const [theme,setTheme]=useState("dark");
   const [simSeason,setSimSeason]=useState(SEASONS[0]);   // which IPL season's league you face
   const league=LEAGUES[simSeason]||[];
@@ -17,7 +21,25 @@ function App(){
   // ---- profile + achievements (persisted on this device) ----
   const [profile,setProfile]=useState(loadProfile);
   const [showAch,setShowAch]=useState(false);
+  const [showHelp,setShowHelp]=useState(false);
+  const [openMatch,setOpenMatch]=useState(null);   // expanded scorecard index
   const [toasts,setToasts]=useState([]);
+  // ---- leaderboard ----
+  const [showLb,setShowLb]=useState(false);
+  const [lbTab,setLbTab]=useState("eye");
+  const [lbData,setLbData]=useState(null);          // {eye,unbeaten,club} | null while loading
+  const [lbName,setLbName]=useState(()=>{try{return localStorage.getItem("ipl160_lbname")||"";}catch(e){return "";}});
+  const [showName,setShowName]=useState(false);
+  const [nameInput,setNameInput]=useState("");
+  const [submitState,setSubmitState]=useState("");  // "" | "sending" | "done" | "err"
+  function openLb(){ setShowLb(true); setLbData(null); lbFetch().then(rows=>setLbData(lbBoards(rows))); }
+  function pushScore(){
+    const row={name:lbName.trim().slice(0,18), ovr:teamRating, perfect:!!(result&&result.perfect), season:simSeason};
+    setSubmitState("sending");
+    lbSubmit(row).then(ok=>setSubmitState(ok?"done":"err"));
+  }
+  function trySubmit(){ if(!lbName.trim()){ setNameInput(lbName); setShowName(true); } else pushScore(); }
+  function saveLbName(){ const nm=nameInput.trim().slice(0,18); if(!nm)return; try{localStorage.setItem("ipl160_lbname",nm);}catch(e){} setLbName(nm); setShowName(false); setTimeout(()=>{ const row={name:nm,ovr:teamRating,perfect:!!(result&&result.perfect),season:simSeason}; setSubmitState("sending"); lbSubmit(row).then(ok=>setSubmitState(ok?"done":"err")); },0); }
   useEffect(()=>{ try{localStorage.setItem("ipl160_profile",JSON.stringify(profile));}catch(e){} },[profile]);
   useEffect(()=>{ if(!toasts.length)return; const id=setTimeout(()=>setToasts(t=>t.slice(1)),4500); return ()=>clearTimeout(id); },[toasts]);
   const unlockedCount=profile.unlocked.length;
@@ -34,7 +56,7 @@ function App(){
   // reveal the season one game at a time once a result is set
   useEffect(()=>{
     if(!result){setRev(0);return;}
-    setRev(0);
+    setRev(0);setOpenMatch(null);setSubmitState("");
     const total=result.feed.length; let n=0;
     const id=setInterval(()=>{ n++; setRev(n); if(n>=total)clearInterval(id); },520);
     return ()=>clearInterval(id);
@@ -42,10 +64,12 @@ function App(){
   useEffect(()=>{ if(result&&feedEnd.current)feedEnd.current.scrollIntoView({behavior:"smooth",block:"nearest"}); },[rev,result]);
 
   function chooseFormation(f){
+    if(spinTimer.current)clearTimeout(spinTimer.current); setReel(null);setAnim(false);lastTeamRef.current=null;
     setFormation(f); setXi(Array(f.slots.length).fill(null));
-    setSpin(null);setSpinCount(0);setRerolls(2);setResult(null);setBattingOrder(null);
+    setSpin(null);setSpinCount(0);setRerolls(2);setResult(null);setBattingOrder(null);setBlindDraft(true);
   }
-  function restart(){setFormation(null);setXi([]);setSpin(null);setSpinCount(0);setRerolls(2);setResult(null);setBattingOrder(null);}
+  function restart(){if(spinTimer.current)clearTimeout(spinTimer.current);setReel(null);setAnim(false);lastTeamRef.current=null;
+    setFormation(null);setXi([]);setSpin(null);setSpinCount(0);setRerolls(2);setResult(null);setBattingOrder(null);setBlindDraft(true);}
   function doReroll(){ if(!spin||rerolls<=0)return; setRerolls(r=>r-1); doSpin(); }
 
   const themeBtn=(
@@ -54,10 +78,75 @@ function App(){
     </button>
   );
   const accountBar=(
-    <button className="acct" onClick={()=>setShowAch(true)} title="Achievements">🏆 {unlockedCount}/{ACHIEVEMENTS.length}</button>
+    <>
+      <button className="acct" onClick={()=>setShowHelp(true)} title="How it works">ⓘ How</button>
+      {LB_ON && <button className="acct" onClick={openLb} title="Leaderboard">🏅 Ranks</button>}
+      <button className="acct" onClick={()=>setShowAch(true)} title="Achievements">🏆 {unlockedCount}/{ACHIEVEMENTS.length}</button>
+    </>
   );
   const overlays=(
     <>
+      {showHelp && (
+        <div className="modal-ov" onClick={()=>setShowHelp(false)}>
+          <div className="modal wide" onClick={e=>e.stopPropagation()}>
+            <div className="modal-top">
+              <h3 className="modal-h">How it works</h3>
+              <button className="theme-btn" onClick={()=>setShowHelp(false)}>✕</button>
+            </div>
+            <div className="help">
+              <p><b>Ratings (0–99).</b> Every player-season is rated from real <i>ball-by-ball</i> IPL data (Cricsheet), era-adjusted so a low economy in a high-scoring year counts for more. A 2016 Kohli is rated like 2016 Kohli, not his career.</p>
+              <p><b>The draft.</b> Spin to land on a real franchise squad, then pick one player into an open slot. Rules: max 4 overseas, positions are role-locked (a top-order bat can't fill a finisher slot), no take-backs — but you get 2 re-rolls.</p>
+              <p><b>Batting order.</b> Each player slots in at a position they actually batted that season. You can shuffle the line-up, but only move someone up to a spot they've genuinely batted (and down freely).</p>
+              <p><b>The simulation is <i>not</i> random.</b> Each innings is a contest: your <i>batting</i> strength vs the opponent's <i>bowling</i> strength, plus a small luck factor so weaker sides occasionally pull off an upset. Team strength is the main driver — a sharper attack really does defend lower totals.</p>
+              <p><b>The goal.</b> Win all 14 league games and the playoffs for a flawless <b>16-0</b>. Pick any IPL season (2008–2026) to decide which real ten-team field you face.</p>
+              <p className="small">Tip: tap any match in the results to expand its full scorecard. Turn on Hard mode to draft blind.</p>
+            </div>
+          </div>
+        </div>
+      )}
+      {showLb && (
+        <div className="modal-ov" onClick={()=>setShowLb(false)}>
+          <div className="modal wide" onClick={e=>e.stopPropagation()}>
+            <div className="modal-top">
+              <div><h3 className="modal-h">Leaderboard</h3>
+                <div className="small">Hard-mode (blind-drafted) runs only · top 50</div></div>
+              <button className="theme-btn" onClick={()=>setShowLb(false)}>✕</button>
+            </div>
+            <div className="lb-tabs">
+              <button className={"lb-tab"+(lbTab==="eye"?" on":"")} onClick={()=>setLbTab("eye")}>🥇 Best Eye</button>
+              <button className={"lb-tab"+(lbTab==="unbeaten"?" on":"")} onClick={()=>setLbTab("unbeaten")}>🐐 Unbeaten</button>
+              <button className={"lb-tab"+(lbTab==="club"?" on":"")} onClick={()=>setLbTab("club")}>🔥 16-0 Club</button>
+            </div>
+            <div className="lb-sub">{lbTab==="eye"?"Highest-rated XI drafted blind":lbTab==="unbeaten"?"Lowest-rated XI to go a blind 16-0":"Most blind hard-mode 16-0 seasons"}</div>
+            {lbData===null ? <div className="small center" style={{padding:"24px 0"}}>Loading…</div> : (()=>{
+              const rows=lbData[lbTab]||[];
+              if(!rows.length) return <div className="small center" style={{padding:"24px 0"}}>No entries yet — be the first.</div>;
+              return (
+                <div className="lb-list">
+                  {rows.map((r,i)=>(
+                    <div key={i} className="lb-row">
+                      <span className="lb-rank">{i+1}</span>
+                      <span className="lb-name">{r.name}</span>
+                      <span className="lb-val">{lbTab==="club"?(r.n+" ×"):r.ovr}{lbTab!=="club"&&r.season?<span className="small"> · {r.season}</span>:null}</span>
+                    </div>
+                  ))}
+                </div>
+              );
+            })()}
+          </div>
+        </div>
+      )}
+      {showName && (
+        <div className="modal-ov" onClick={()=>setShowName(false)}>
+          <div className="modal" onClick={e=>e.stopPropagation()}>
+            <h3 className="modal-h">Pick a name</h3>
+            <p className="small">Shown on the public leaderboard. Saved on this device.</p>
+            <input className="nameinput" value={nameInput} maxLength={18} placeholder="Your name" autoFocus
+              onChange={e=>setNameInput(e.target.value)} onKeyDown={e=>{if(e.key==="Enter")saveLbName();}}/>
+            <button className="btn-go" style={{marginTop:14}} onClick={saveLbName}>Save &amp; submit</button>
+          </div>
+        </div>
+      )}
       {showAch && (
         <div className="modal-ov" onClick={()=>setShowAch(false)}>
           <div className="modal wide" onClick={e=>e.stopPropagation()}>
@@ -158,10 +247,10 @@ function App(){
   const orderValid=battingOrder&&battingOrder.length===filled.length&&battingOrder.every(i=>xi[i]);
   const battOrder=complete?(orderValid?battingOrder:defaultOrder()):null;   // slot indices in batting order
   const canUp=idx=>battOrder&&idx>0&&bpOf(xi[battOrder[idx]])<=idx;          // can this player bat one spot higher?
-  const canDown=idx=>battOrder&&idx<battOrder.length-1&&bpOf(xi[battOrder[idx+1]])<=idx+1; // can the one below come up?
+  const canDown=idx=>battOrder&&idx<battOrder.length-1;                                 // moving DOWN the order is always allowed
   function moveBat(idx,dir){
     const base=battOrder||defaultOrder(); const j=idx+dir; if(j<0||j>=base.length)return;
-    if(bpOf(xi[base[idx]])>j+1||bpOf(xi[base[j]])>idx+1)return;   // respect each player's highest valid position
+    if(dir<0 && bpOf(xi[base[idx]])>j+1) return;   // only an UPWARD move must respect the mover's highest historical position
     const nx=base.slice(); const t=nx[idx];nx[idx]=nx[j];nx[j]=t; setBattingOrder(nx);
   }
   // ---- live unit-strength breakdown: Top order / Middle order / Bowling ----
@@ -195,12 +284,31 @@ function App(){
     return openSlots.find(s=>s.ok(p))||null;
   }
   function doSpin(){
+    if(!hard) setBlindDraft(false);   // spinning a squad with ratings visible = not a blind draft
+    if(spinTimer.current) clearTimeout(spinTimer.current);
     const usable=allSquads.filter(sq=>PLAYERS.some(p=>sqKey(p)===sq && eligibleSlot(p)));
-    setAnim(true);setTimeout(()=>setAnim(false),450);
-    setSpin(rnd(usable.length?usable:allSquads));setSpinCount(c=>c+1);setResult(null);
+    const pool=usable.length?usable:allSquads;
+    // group eligible squads by franchise, then pick a FRANCHISE uniformly (so a 15-season club
+    // isn't 15x more likely than a 1-season one), avoiding the franchise we just landed on.
+    const byTeam={}; pool.forEach(sq=>{const tm=sq.split("||")[0];(byTeam[tm]=byTeam[tm]||[]).push(sq);});
+    const teams=Object.keys(byTeam);
+    let pickTeams=teams.filter(tm=>tm!==lastTeamRef.current); if(!pickTeams.length)pickTeams=teams;
+    const team=rnd(pickTeams); const target=rnd(byTeam[team]);
+    lastTeamRef.current=team;
+    setSpin(null);setResult(null);setSpinCount(c=>c+1);setAnim(true);
+    // slot-machine reel: flash franchise-spread squads, decelerating, then land on the target
+    const TOTAL=14; let n=0;
+    const tick=()=>{
+      n++;
+      if(n>=TOTAL){ setReel(null); setSpin(target); setAnim(false); spinTimer.current=null; return; }
+      const rt=rnd(teams); setReel(rnd(byTeam[rt]));   // flash a varied franchise each frame
+      spinTimer.current=setTimeout(tick, 40+n*n*0.9);  // accelerating delay = decelerating spin
+    };
+    tick();
   }
   function draft(p){
     const slot=eligibleSlot(p); if(!slot) return;
+    if(!hard) setBlindDraft(false);   // picking with ratings visible = not a blind draft
     const nx=[...xi]; nx[slot.i]={...p}; setXi(nx); setSpin(null);
     const fl=nx.filter(Boolean);
     if(fl.length===slots.length){   // XI just completed -> record draft achievements
@@ -256,7 +364,7 @@ function App(){
       feed,orange,purple,mvp,allr,poFinal,season:simSeason});
     // ---- record achievement stats for this campaign ----
     const projR=1+fieldR.filter(r=>r>teamRating).length;
-    const lostFirst5=myMatches.length>=5 && myMatches.slice(0,5).every(m=>!m.won);
+    const lostFirst5=myMatches.length>=5 && myMatches.slice(0,5).filter(m=>!m.won).length>=2;
     const champPunjabDc=!champion && /Punjab|Delhi/.test(champName);
     const lastIsYou=teams[teams.length-1]===you, topIsYou=teams[0]===you;
     bump(s=>{
@@ -264,9 +372,9 @@ function App(){
       if(champion){
         ns.titles=s.titles+1;
         ns.seasonsWon=s.seasonsWon.includes(simSeason)?s.seasonsWon:[...s.seasonsWon,simSeason];
-        if(hard)ns.hardTitles=s.hardTitles+1;
+        if(blindDraft)ns.hardTitles=s.hardTitles+1;            // only counts if the XI was drafted blind
         if(you.w===14)ns.perfects=s.perfects+1;
-        if(you.w===14&&hard)ns.perfectHard=s.perfectHard+1;
+        if(you.w===14&&blindDraft)ns.perfectHard=s.perfectHard+1;
         if(projR>=5)ns.underdogTitles=s.underdogTitles+1;
         if(lostFirst5)ns.comeback=s.comeback+1;
       }
@@ -312,10 +420,7 @@ function App(){
             {SEASONS.map(s=><option key={s} value={s}>IPL {s}</option>)}
           </select>
         </span>
-        <button className={"hardtog"+(hard?" on":"")} onClick={()=>setHard(h=>!h)}
-          title="Hide every rating and stat until your XI is complete">
-          <span className="htdot"/> Hard mode <span className="htstate">{hard?"ON":"OFF"}</span>
-        </button>
+        {hard && <span className="hardtog on" style={{cursor:"default"}} title="You're on a blind hard-mode run"><span className="htdot"/> Hard mode</span>}
       </div>
 
       <div className="grid">
@@ -324,10 +429,11 @@ function App(){
           {!complete && (
             <>
               <div className={"wheel"+(anim?" spinning":"")}>
-                {spin?<div>{tName}<span className="season-tag">{tSeason} squad</span></div>
-                     :<div style={{color:"var(--muted)"}}>Spin to land on an IPL squad</div>}
+                {(()=>{ const show=reel||spin; if(!show) return <div style={{color:"var(--muted)"}}>Spin to land on an IPL squad</div>;
+                  const [n,sn]=show.split("||");
+                  return <div className="ws">{n}<span className="season-tag">{sn} squad</span></div>; })()}
               </div>
-              <button className="btn-primary" style={{width:"100%",marginTop:12,opacity:spin?0.4:1}} onClick={doSpin} disabled={!!spin}>{spin?"⛔ Draft a player below first":"🎡 Spin the wheel"}</button>
+              <button className="btn-primary" style={{width:"100%",marginTop:12,opacity:(spin||anim)?0.4:1}} onClick={doSpin} disabled={!!spin||anim}>{anim?"🎰 Spinning…":(spin?"⛔ Draft a player below first":"🎡 Spin the wheel")}</button>
               {spin && (
                 <button className="btn-reroll" onClick={doReroll} disabled={rerolls<=0}>
                   {rerolls>0?"🎲 Re-roll this squad ("+rerolls+" left)":"🎲 Re-roll used — draft a player"}
@@ -371,15 +477,32 @@ function App(){
               </div>)}
               <h2 style={{margin:"14px 0 6px"}}>Your season · match by match</h2>
               <div className="matches">
-                {result.feed.slice(0,rev).map((m,i)=>(
-                  <div key={i} className={"mrow reveal"+(m.playoff?" po":"")}>
+                {result.feed.slice(0,rev).map((m,i)=>{
+                  const open=openMatch===i; const c=m.card;
+                  return (
+                  <div key={i} className={"mrow reveal"+(m.playoff?" po":"")+(open?" open":"")}
+                       style={{cursor:"pointer"}} onClick={()=>setOpenMatch(open?null:i)}>
                     <span className={"res "+(m.won?"w":"l")}>{m.won?"W":"L"}</span>
                     <div className="mscore">
-                      <div>{m.playoff?<b style={{color:"var(--accent)"}}>{m.label}</b>:`Match ${i+1}`} · vs {m.opp}</div>
+                      <div>{m.playoff?<b style={{color:"var(--accent)"}}>{m.label}</b>:`Match ${i+1}`} · vs {m.opp} <span className="caret">{open?"▾":"▸"}</span></div>
                       <div className="mtop">YOU <b style={{color:"var(--txt)"}}>{m.meTot}/{m.meWk}</b> · {m.oppAbbr} {m.opTot}/{m.opWk}  —  ★ <span className="sc">{m.meTop.name} {m.meTop.score}</span> · {m.opTop.name} {m.opTop.score}</div>
+                      {open && c && (
+                        <div className="scard">
+                          <div className="sc-col">
+                            <div className="sc-h">YOU · {m.meTot}/{m.meWk}</div>
+                            {c.meBat.map((b,k)=><div key={k} className="sc-r"><span>{b.name}</span><b>{b.runs}</b></div>)}
+                            <div className="sc-bo">Best bowler vs you: {c.opBowl.name} {c.opBowl.wkts}w</div>
+                          </div>
+                          <div className="sc-col">
+                            <div className="sc-h">{m.oppAbbr} · {m.opTot}/{m.opWk}</div>
+                            {c.opBat.map((b,k)=><div key={k} className="sc-r"><span>{b.name}</span><b>{b.runs}</b></div>)}
+                            <div className="sc-bo">Your best bowler: {c.meBowl.name} {c.meBowl.wkts}w</div>
+                          </div>
+                        </div>
+                      )}
                     </div>
                   </div>
-                ))}
+                );})}
                 <div ref={feedEnd}/>
               </div>
               {done && (<>
@@ -409,6 +532,14 @@ function App(){
                   <tr key={i} className={t.you?"you":""}><td>{i+1}</td><td>{t.you?"YOUR XI":t.name}</td><td>{t.w}</td><td>{t.l}</td><td>{t.pts}</td></tr>
                 ))}</tbody>
               </table>
+              {LB_ON && blindDraft && (
+                <div className="lb-submit">
+                  <button className="btn-go" disabled={submitState==="sending"||submitState==="done"} onClick={trySubmit}>
+                    {submitState==="done"?"✓ Submitted to leaderboard":submitState==="sending"?"Submitting…":submitState==="err"?"⚠ Failed — tap to retry":"🏅 Submit this run to the leaderboard"}
+                  </button>
+                  <div className="small">Posts your {teamRating} blind XI{result.perfect?" · counts for the 16-0 boards too":""}</div>
+                </div>
+              )}
               <div style={{display:"flex",gap:8,marginTop:12,justifyContent:"center"}}>
                 <button className="btn-ghost" onClick={simulate}>↻ Re-simulate</button>
                 <button className="btn-ghost" onClick={restart}>＋ New game</button>

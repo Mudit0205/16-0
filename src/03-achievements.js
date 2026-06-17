@@ -16,7 +16,7 @@ const ACHIEVEMENTS=[
   // ---- meme achievements ----
   {id:"blindfold",icon:"🥷",name:"Blindfold Perfect",desc:"Go a flawless 16-0 with Hard mode on",      chk:s=>s.perfectHard>=1},
   {id:"finally", icon:"🤡", name:"Finally!",    desc:"Watch Punjab or Delhi actually win the IPL",     chk:s=>s.punjabDc>=1},
-  {id:"comeback",icon:"🌊", name:"Mumbai Special",desc:"Lose your first 5 games, then win the title",   chk:s=>s.comeback>=1},
+  {id:"comeback",icon:"🌊", name:"Mumbai Special",desc:"Lose 2 of your first 5 games, then win the title",   chk:s=>s.comeback>=1},
   {id:"spoon",   icon:"🥄", name:"Wooden Spoon",desc:"Finish stone last on the table",                 chk:s=>s.woodenSpoon>=1},
   {id:"choke",   icon:"😬", name:"Minor Premiers",desc:"Top the league table but win no trophy",        chk:s=>s.choke>=1},
   {id:"whitewash",icon:"🫠",name:"Whitewashed", desc:"Lose all 14 league games",                       chk:s=>s.whitewash>=1},

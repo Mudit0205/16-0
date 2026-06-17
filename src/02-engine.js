@@ -46,13 +46,18 @@ function batInnings(team,total,tally){
     const t=tally[p.name]||(tally[p.name]={runs:0,wkts:0,team:team.abbr}); t.runs+=r; });
   cards.sort((a,b)=>b.runs-a.runs); return cards;
 }
-// spread wickets across the ~6 frontline bowlers with flat weighting -> Purple cap ~22, tight spread
+// spread wickets across the ~6 frontline bowlers with flat weighting -> Purple cap ~22, tight spread.
+// returns the best bowling figures of the innings (for the per-match scorecard)
 function bowlInnings(bowlTeam,wk,tally){
   const pool=(bowlTeam.bowls&&bowlTeam.bowls.length)?bowlTeam.bowls.slice(0,6):[{name:"—",r:bowlTeam.rating}];
   const wt=pool.map(p=>Math.pow(Math.max(1,(p.r||70)-55),0.5)); const tot=wt.reduce((a,b)=>a+b,0)||1;
+  const local={};
   for(let i=0;i<wk;i++){ let x=Math.random()*tot,pick=pool[pool.length-1];
     for(let k=0;k<pool.length;k++){x-=wt[k];if(x<=0){pick=pool[k];break;}}
-    const t=tally[pick.name]||(tally[pick.name]={runs:0,wkts:0,team:bowlTeam.abbr}); t.wkts++; }
+    const t=tally[pick.name]||(tally[pick.name]={runs:0,wkts:0,team:bowlTeam.abbr}); t.wkts++;
+    local[pick.name]=(local[pick.name]||0)+1; }
+  const best=Object.entries(local).sort((a,b)=>b[1]-a[1])[0];
+  return best?{name:best[0],wkts:best[1]}:{name:"—",wkts:0};
 }
 function playMatch(A,B,tally){
   // each innings is a contest: A bats vs B's attack, B bats vs A's attack
@@ -61,10 +66,34 @@ function playMatch(A,B,tally){
   const awk=clmp(ri(2,5)+Math.round(((B.bowlR||B.rating)-(A.batR||A.rating))/10),1,9);
   const bwk=clmp(ri(2,5)+Math.round(((A.bowlR||A.rating)-(B.batR||B.rating))/10),1,9);
   const acards=batInnings(A,at,tally), bcards=batInnings(B,bt,tally);
-  bowlInnings(B,awk,tally); bowlInnings(A,bwk,tally);
-  const m={at,bt,awk,bwk,atop:acards[0],btop:bcards[0]};
+  const aBowl=bowlInnings(B,awk,tally), bBowl=bowlInnings(A,bwk,tally);   // B's attack vs A, A's attack vs B
+  const m={at,bt,awk,bwk,atop:acards[0],btop:bcards[0],
+    aBat:acards.slice(0,3),bBat:bcards.slice(0,3),aBowl,bBowl};
   m.win=at>bt?A:B;m.lose=at>bt?B:A;return m;}
 function youView(A,B,m,label){if(!A.you&&!B.you)return null;const ya=A.you,op=ya?B:A;
   return {label,opp:op.name,oppAbbr:op.abbr,won:m.win.you,
     meTot:ya?m.at:m.bt,meWk:ya?m.awk:m.bwk,opTot:ya?m.bt:m.at,opWk:ya?m.bwk:m.awk,
-    meTop:ya?m.atop:m.btop,opTop:ya?m.btop:m.atop};}
+    meTop:ya?m.atop:m.btop,opTop:ya?m.btop:m.atop,
+    card:{ meBat:ya?m.aBat:m.bBat, opBat:ya?m.bBat:m.aBat,
+           meBowl:ya?m.bBowl:m.aBowl, opBowl:ya?m.aBowl:m.bBowl }};}
+
+// ---- leaderboard (optional Supabase backend; stays off until window.LB_URL + LB_KEY are filled) ----
+const LB_URL=(typeof window!=="undefined"&&window.LB_URL)||"";
+const LB_KEY=(typeof window!=="undefined"&&window.LB_KEY)||"";
+const LB_ON=/^https?:\/\//.test(LB_URL)&&LB_KEY.length>20;
+async function lbSubmit(row){ if(!LB_ON)return false; try{
+  const r=await fetch(LB_URL+"/rest/v1/scores",{method:"POST",
+    headers:{apikey:LB_KEY,Authorization:"Bearer "+LB_KEY,"Content-Type":"application/json",Prefer:"return=minimal"},
+    body:JSON.stringify(row)}); return r.ok; }catch(e){return false;} }
+async function lbFetch(){ if(!LB_ON)return null; try{
+  const r=await fetch(LB_URL+"/rest/v1/scores?select=name,ovr,perfect,season&order=created_at.desc&limit=4000",
+    {headers:{apikey:LB_KEY,Authorization:"Bearer "+LB_KEY}});
+  if(!r.ok)return null; return await r.json(); }catch(e){return null;} }
+function lbBoards(rows){          // aggregate raw rows into the three boards (best entry per name)
+  const eye={},unb={},club={};
+  (rows||[]).forEach(r=>{ const n=(r.name||"").trim(); if(!n||typeof r.ovr!=="number")return;
+    if(!eye[n]||r.ovr>eye[n].ovr) eye[n]={name:n,ovr:r.ovr,season:r.season};
+    if(r.perfect){ if(!unb[n]||r.ovr<unb[n].ovr) unb[n]={name:n,ovr:r.ovr,season:r.season}; club[n]=(club[n]||0)+1; } });
+  return { eye:Object.values(eye).sort((a,b)=>b.ovr-a.ovr).slice(0,50),
+    unbeaten:Object.values(unb).sort((a,b)=>a.ovr-b.ovr).slice(0,50),
+    club:Object.entries(club).map(([name,n])=>({name,n})).sort((a,b)=>b.n-a.n).slice(0,50) };}
