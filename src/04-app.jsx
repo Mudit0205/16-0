@@ -5,7 +5,7 @@ function App(){
   const [spinCount,setSpinCount]=useState(0);
   const [rerolls,setRerolls]=useState(2);           // two free re-rolls per game to dodge a squad
   const [result,setResult]=useState(null);
-  const [hard,setHard]=useState(false);
+  const [hard,setHard]=useState(true);              // hard (blind) is the default; easy is opt-in
   const [blindDraft,setBlindDraft]=useState(true);  // true only if the WHOLE draft was done with ratings hidden
   const [anim,setAnim]=useState(false);
   const [reel,setReel]=useState(null);              // squad currently flashing during the slot spin
@@ -223,8 +223,8 @@ function App(){
           <div className="intro-divider"></div>
           <div className="intro-foot">
             <button className={"hardtog"+(hard?" on":"")} onClick={()=>setHard(h=>!h)}
-              title="Hide every rating and stat until your XI is complete">
-              <span className="htdot"/> Hard mode <span className="htstate">{hard?"ON":"OFF"}</span>
+              title="Hard mode hides every rating while you draft (revealed once your XI is full). Switch off to see ratings as you pick. Only blind runs count on the leaderboard.">
+              <span className="htdot"/> {hard?"Hard mode · ratings hidden":"Easy mode · ratings shown"}
             </button>
           </div>
         </div>
