@@ -541,7 +541,6 @@ function App(){
                 </div>
               )}
               <div style={{display:"flex",gap:8,marginTop:12,justifyContent:"center"}}>
-                <button className="btn-ghost" onClick={simulate}>↻ Re-simulate</button>
                 <button className="btn-ghost" onClick={restart}>＋ New game</button>
               </div>
               </>)}
